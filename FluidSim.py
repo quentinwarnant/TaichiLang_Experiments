@@ -8,6 +8,7 @@ ti.init(arch=ti.gpu)
 
 dim = 320
 VelocityField = ti.Vector.field(n=2, dtype=float, shape=(dim, dim))
+VelocityField_Old = ti.Vector.field(n=2, dtype=float, shape=(dim, dim))
 DebugVelocityField = ti.Vector.field(n=2, dtype=float, shape=(dim, dim))
 
 DivergenceField = ti.field(ti.f32, shape=(dim, dim))
@@ -58,7 +59,7 @@ def AddInputVelocity(Pos: tm.vec2, Velocity : tm.vec2):
 def AdvectVelocity():
     for i, j in VelocityField:  # Parallelized over all pixels
         CurrCellVel = VelocityField[i,j]
-        VelocityField[i,j] = VelocityField[tm.clamp( i-int(CurrCellVel.x), 0, dim), tm.clamp(j-int(CurrCellVel.y), 0, dim)] #should do interpolation
+        VelocityField[i,j] = VelocityField_Old[tm.clamp( i-int(CurrCellVel.x), 0, dim), tm.clamp(j-int(CurrCellVel.y), 0, dim)] #should do interpolation
 
 
 @ti.kernel
@@ -171,6 +172,19 @@ while gui.running:
     AddInputVelocity(PrevFrameCursorPos, Velocity)
     EnforceBoundaryConditions_Velocity()
 
+    #print(VelocityField)
+    VelocityField_Old.copy_from(VelocityField)
+    AdvectVelocity()
+    EnforceBoundaryConditions_Velocity()
+
+
+    #DiffuseVelocity()
+    #EnforceBoundaryConditions_Velocity()
+    
+    #AddExternalForces()
+    #EnforceBoundaryConditions_Velocity()
+
+
     #Calculate divergence from velocity field
     CalculateDivergence()
 
@@ -187,9 +201,6 @@ while gui.running:
     #remove gradient of Pressure from velocity (ie: remove divergence)
     RemoveDivergenceFromVelocity()
 
-    #print(VelocityField)
-    AdvectVelocity()
-    EnforceBoundaryConditions_Velocity()
 
     AdvectDie()
     EnforceBoundaryConditions_Die()

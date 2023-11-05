@@ -13,6 +13,7 @@ DebugVelocityField = ti.Vector.field(n=2, dtype=float, shape=(dim, dim))
 DivergenceField = ti.field(ti.f32, shape=(dim, dim))
 PressureField = ti.field(ti.f32, shape=(dim, dim))
 PressureField_Old = ti.field(ti.f32, shape=(dim, dim))
+DebugPressureField = ti.field(ti.f32, shape=(dim,dim))
 
 DieField = ti.field(ti.f32, shape=(dim,dim))
 
@@ -51,7 +52,7 @@ velocityStampField = ti.field(ti.i16, shape=(20,20))
 @ti.kernel
 def AddInputVelocity(Pos: tm.vec2, Velocity : tm.vec2):
     for i,j in velocityStampField:
-        VelocityField[tm.clamp(int(Pos[0] * dim) + (i-10), 0, dim), tm.clamp(int(Pos[1] * dim) + (j-10), 0, dim)] += Velocity * 10.
+        VelocityField[tm.clamp(int(Pos[0] * dim) + (i-10), 0, dim), tm.clamp(int(Pos[1] * dim) + (j-10), 0, dim)] += Velocity * 30.
     
 @ti.kernel
 def AdvectVelocity():
@@ -72,7 +73,7 @@ def CalculateDivergence():
         if i == 0 or i == (dim-1) or j == 0 or j == (dim-1):
             DivergenceField[i,j] = 0
         else:     
-            DivergenceField[i,j] = (VelocityField[i+1,j].x - VelocityField[i-1,j].x) + (VelocityField[i,j+1].y - VelocityField[i,j-1].y) 
+            DivergenceField[i,j] = ((VelocityField[i+1,j].x - VelocityField[i-1,j].x) / 2. ) + ((VelocityField[i,j+1].y - VelocityField[i,j-1].y) / 2.) 
 
 @ti.kernel
 def ComputePressure():
@@ -90,7 +91,7 @@ def RemoveDivergenceFromVelocity():
             # edge
             Grad = tm.vec2(0,0)
         else:
-            Grad = tm.vec2(PressureField[i+1,j] - PressureField[i-1,j], PressureField[i,j+1] - PressureField[i,j-1] )
+            Grad = tm.vec2((PressureField[i+1,j] - PressureField[i-1,j]) / 2. , (PressureField[i,j+1] - PressureField[i,j-1]) / 2. )
         
         VelocityField[i,j] -= Grad
 
@@ -128,6 +129,12 @@ def EnforceBoundaryConditions_Die():
 def GenerateDebugVelocityField():
     for i, j in VelocityField:  # Parallelized over all pixels
         DebugVelocityField[i,j] = ((VelocityField[i,j] ) * 0.5) + 0.5
+
+
+@ti.kernel
+def GenerateDebugPressureField():
+    for i,j in PressureField:
+        DebugPressureField[i,j] = (PressureField[i,j] * 0.5) + 0.5
 
 ###################
 ###################
@@ -196,7 +203,8 @@ while gui.running:
         case 2:
             gui.set_image(DivergenceField)
         case 3:
-            gui.set_image(PressureField)
+            GenerateDebugPressureField()
+            gui.set_image(DebugPressureField)
         case _:
             gui.set_image(DieField)
 

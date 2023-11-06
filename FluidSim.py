@@ -8,6 +8,8 @@ ti.init(arch=ti.gpu)
 
 dt = 16.6666e-3
 dim = 420
+Viscocity = 1.4
+
 VelocityField = ti.Vector.field(n=2, dtype=float, shape=(dim, dim))
 VelocityField_Old = ti.Vector.field(n=2, dtype=float, shape=(dim, dim))
 DebugVelocityField = ti.Vector.field(n=2, dtype=float, shape=(dim, dim))
@@ -17,9 +19,8 @@ PressureField = ti.field(ti.f32, shape=(dim, dim))
 PressureField_Old = ti.field(ti.f32, shape=(dim, dim))
 DebugPressureField = ti.field(ti.f32, shape=(dim,dim))
 
-DieField = ti.field(ti.f32, shape=(dim,dim))
-DieField_Old = ti.field(ti.f32, shape=(dim,dim))
-
+DieField = ti.Vector.field(n=3,dtype=ti.f32, shape=(dim,dim))
+DieField_Old = ti.Vector.field(n=3,dtype=ti.f32, shape=(dim,dim))
 @ti.func
 def ResetFields():
     VelocityField.fill([0.0,0.0])
@@ -33,10 +34,8 @@ def ClearPressure():  # complex square of a 2D vector
 
 @ti.func
 def SetInitialDieSetup():
-    DieField.fill(0.0)
     for i, j in DieField:  # Parallelized over all pixels
-        if i > ((dim/2)-20) and i < ((dim/2)+20) and j > ((dim/2)-20) and j < ((dim/2)+20):
-            DieField[i,j] = 1.0
+        DieField[i,j] = tm.vec3( float(i) / dim, float(j) / dim, 0.5)
 
 def ReadInput(gui : ti.GUI, PrevFrameCursorPos : tm.vec2):
     CursorPos = ti.Vector( gui.get_cursor_pos() )
@@ -66,7 +65,7 @@ velocityStampField = ti.field(ti.i16, shape=(20,20))
 @ti.kernel
 def AddInputVelocity(Pos: tm.vec2, Velocity : tm.vec2):
     for i,j in velocityStampField:
-        VelocityField[tm.clamp(int(Pos.x * dim) + (i-10), 0, dim-1), tm.clamp(int(Pos.y * dim) + (j-10), 0, dim-1)] += Velocity * 300.
+        VelocityField[tm.clamp(int(Pos.x * dim) + (i-10), 0, dim-1), tm.clamp(int(Pos.y * dim) + (j-10), 0, dim-1)] += Velocity * 200.
     
 @ti.kernel
 def AdvectVelocity():
@@ -88,12 +87,29 @@ def CalculateDivergence():
         else:     
             DivergenceField[i,j] = ((VelocityField[i+1,j].x - VelocityField[i-1,j].x) / 2. ) + ((VelocityField[i,j+1].y - VelocityField[i,j-1].y) / 2.) 
 
+@ti.func
+def Jacobi(Coord : tm.vec2, Alpha, Beta, FieldX, FieldB): # X & B refer to Ax = b
+    return ((FieldX[Coord.x+1,Coord.y] + FieldX[Coord.x-1,Coord.y] + FieldX[Coord.x,Coord.y+1] + FieldX[Coord.x,Coord.y-1]) + ( Alpha * FieldB[Coord.x, Coord.y])) * Beta
+
+
 @ti.kernel
 def ComputePressure():
-    #alpha = (1.0 / dim) * (1.0/dim)
+    Alpha = -1
+    Beta = 0.25
+
     for i,j in PressureField:
         if not (i == 0 or i == (dim-1) or j == 0 or j == (dim-1)) : #not an edge
-            PressureField[i,j] = ((PressureField_Old[i+1,j] + PressureField_Old[i-1,j] + PressureField_Old[i,j+1] + PressureField_Old[i,j-1]) + (-DivergenceField[i,j])) * 0.25
+            PressureField[i,j] = Jacobi( tm.ivec2(i,j), Alpha, Beta, PressureField_Old, DivergenceField) 
+
+@ti.kernel
+def DiffuseVelocity():
+    Alpha = 1. / Viscocity * dt
+    Beta = 1. / (4 + Alpha)
+
+    for i,j in VelocityField_Old:
+        if not (i == 0 or i == (dim-1) or j == 0 or j == (dim-1)) : #not an edge
+            VelocityField[i,j] = Jacobi( tm.ivec2(i,j), Alpha, Beta, VelocityField_Old, VelocityField_Old) 
+
 
 @ti.kernel
 def RemoveDivergenceFromVelocity():
@@ -136,7 +152,7 @@ def EnforceBoundaryConditions_Velocity():
 def EnforceBoundaryConditions_Die():
     for i,j in VelocityField:
         if (i == 0 or i == (dim-1) or j == 0 or j == (dim-1)) : #if edge
-            DieField[i,j] = 0
+            DieField[i,j] = tm.vec3(0.,0.,0.)
 
 @ti.kernel
 def GenerateDebugVelocityField():
@@ -156,28 +172,36 @@ def GenerateDebugPressureField():
 PrevFrameCursorPos = tm.vec2(0.0,0.0) 
 gui = ti.GUI("Julia Set", res=(dim, dim))
 Init()
-JacobiIterationCount = 60
+PressureIterationCount = 60
+VelocityDiffusionIterationCount = 60
 
 DisplayedBuffer = 0
 
 while gui.running:
+    OverrideVelocity = False
     #Keyboard input (espace to close, space to reset, A/Z/E/R to swap between buffer visualisation)
-    if gui.get_event(ti.GUI.RELEASE):
-        if gui.event.key == ti.GUI.ESCAPE:
-            gui.close()
-            break
-        if gui.event.key == ti.GUI.SPACE:
-            Reset()
-        if  gui.event.key == 'a':
-            DisplayedBuffer = 0
-        if  gui.event.key == 'z':
-            DisplayedBuffer = 1
-        if  gui.event.key == 'e':
-            DisplayedBuffer = 2
-        if  gui.event.key == 'r':
-            DisplayedBuffer = 3
+    if gui.get_event(ti.GUI.RELEASE, ti.GUI.PRESS):
+        if gui.event.type == ti.GUI.RELEASE:
+            if gui.event.key == ti.GUI.ESCAPE:
+                gui.close()
+                break
+            if gui.event.key == ti.GUI.SPACE:
+                Reset()
+            if  gui.event.key == 'a':
+                DisplayedBuffer = 0
+            if  gui.event.key == 'z':
+                DisplayedBuffer = 1
+            if  gui.event.key == 'e':
+                DisplayedBuffer = 2
+            if  gui.event.key == 'r':
+                DisplayedBuffer = 3
+        elif gui.event.type == ti.GUI.PRESS:
+            if gui.event.key == 'Control_L':
+                OverrideVelocity = True
 
     PrevFrameCursorPos, Velocity = ReadInput(gui, PrevFrameCursorPos)
+    if OverrideVelocity:
+        Velocity = tm.vec2(0.,1.)
     AddInputVelocity(PrevFrameCursorPos, Velocity)
     EnforceBoundaryConditions_Velocity()
     
@@ -185,9 +209,14 @@ while gui.running:
     AdvectVelocity()
     EnforceBoundaryConditions_Velocity()
 
+    VelocityField_Old.copy_from(VelocityField)
+    for i in range( VelocityDiffusionIterationCount):
+        DiffuseVelocity()
+        EnforceBoundaryConditions_Velocity()
+        lastIteration = (i == VelocityDiffusionIterationCount-1) 
+        if not lastIteration:
+            VelocityField_Old.copy_from(VelocityField)
 
-    #DiffuseVelocity()
-    #EnforceBoundaryConditions_Velocity()
     
     #AddExternalForces()
     #EnforceBoundaryConditions_Velocity()
@@ -198,10 +227,10 @@ while gui.running:
     PressureField.fill(0)
     PressureField_Old.fill(0)
     #Solve Pressure
-    for i in range(JacobiIterationCount): 
+    for i in range(PressureIterationCount): 
         ComputePressure()
         EnforceBoundaryConditions_Pressure()
-        lastIteration = (i == JacobiIterationCount-1) 
+        lastIteration = (i == PressureIterationCount-1) 
          #copy new to old - for next iteration
         if not lastIteration:
             PressureField_Old.copy_from(PressureField) #TODO: Ping pong instead of copy

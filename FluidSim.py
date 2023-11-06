@@ -61,11 +61,13 @@ def Init():
 def Reset():
     ResetFields()
 
-velocityStampField = ti.field(ti.i16, shape=(20,20))
+InputVelocityStampSize = 20
+VelocityStampField = ti.field(ti.i16, shape=(InputVelocityStampSize,InputVelocityStampSize))
 @ti.kernel
 def AddInputVelocity(Pos: tm.vec2, Velocity : tm.vec2):
-    for i,j in velocityStampField:
-        VelocityField[tm.clamp(int(Pos.x * dim) + (i-10), 0, dim-1), tm.clamp(int(Pos.y * dim) + (j-10), 0, dim-1)] += Velocity * 200.
+    for i,j in VelocityStampField:
+        Strength = tm.sin( (float(i) / InputVelocityStampSize) * tm.pi) * tm.sin( (float(j) / InputVelocityStampSize) * tm.pi)
+        VelocityField[tm.clamp(int(Pos.x * dim) + (i-10), 0, dim-1), tm.clamp(int(Pos.y * dim) + (j-10), 0, dim-1)] += Strength * Velocity * 200.
     
 @ti.kernel
 def AdvectVelocity():
@@ -111,6 +113,16 @@ def DiffuseVelocity():
             VelocityField[i,j] = Jacobi( tm.ivec2(i,j), Alpha, Beta, VelocityField_Old, VelocityField_Old) 
 
 
+# @ti.kernel
+# def DiffuseDie():
+#     Alpha = 1. / Viscocity * dt
+#     Beta = 1. / (4 + Alpha)
+
+#     for i,j in DieField_Old:
+#         if not (i == 0 or i == (dim-1) or j == 0 or j == (dim-1)) : #not an edge
+#             DieField[i,j] = Jacobi( tm.ivec2(i,j), Alpha, Beta, VelocityField_Old, VelocityField_Old) 
+
+
 @ti.kernel
 def RemoveDivergenceFromVelocity():
     # compute gradient
@@ -140,13 +152,13 @@ def EnforceBoundaryConditions_Pressure():
 def EnforceBoundaryConditions_Velocity():
     for i,j in VelocityField:
         if i == 0:
-            VelocityField[i,j] = tm.vec2(-VelocityField[i+1,j].x, VelocityField[i+1,j].y)
+            VelocityField[i,j] = -VelocityField[i+1,j]
         elif i == (dim-1):
-            VelocityField[i,j] = tm.vec2(-VelocityField[i-1,j].x, VelocityField[i-1,j].y)
+            VelocityField[i,j] = -VelocityField[i-1,j]
         elif j == 0:
-            VelocityField[i,j] = tm.vec2(VelocityField[i,j+1].x, -VelocityField[i,j+1].y)
+            VelocityField[i,j] = -VelocityField[i,j+1]
         elif j == (dim-1):
-            VelocityField[i,j] = tm.vec2(VelocityField[i,j-1].x, -VelocityField[i,j-1].y)
+            VelocityField[i,j] = -VelocityField[i,j-1]
 
 @ti.kernel
 def EnforceBoundaryConditions_Die():
@@ -178,6 +190,10 @@ VelocityDiffusionIterationCount = 60
 DisplayedBuffer = 0
 
 while gui.running:
+
+    ##############################
+    ## Input
+    ##############################
     OverrideVelocity = False
     #Keyboard input (espace to close, space to reset, A/Z/E/R to swap between buffer visualisation)
     if gui.get_event(ti.GUI.RELEASE, ti.GUI.PRESS):
@@ -199,6 +215,10 @@ while gui.running:
             if gui.event.key == 'Control_L':
                 OverrideVelocity = True
 
+
+    ##############################
+    ## Fluid Sim
+    ##############################
     PrevFrameCursorPos, Velocity = ReadInput(gui, PrevFrameCursorPos)
     if OverrideVelocity:
         Velocity = tm.vec2(0.,1.)
@@ -242,6 +262,9 @@ while gui.running:
     EnforceBoundaryConditions_Die()
 
 
+    ##############################
+    ## Render
+    ##############################
     match DisplayedBuffer:
         case 0:
             gui.set_image(DieField)

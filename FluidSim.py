@@ -8,7 +8,7 @@ ti.init(arch=ti.gpu)
 
 dt = 16.6666e-3
 dim = 420
-Viscocity = 500.4
+Viscocity = 1.0
 
 VelocityField = ti.Vector.field(n=2, dtype=float, shape=(dim, dim))
 VelocityField_Old = ti.Vector.field(n=2, dtype=float, shape=(dim, dim))
@@ -67,7 +67,7 @@ VelocityStampField = ti.field(ti.i16, shape=(InputVelocityStampSize,InputVelocit
 def AddInputVelocity(Pos: tm.vec2, Velocity : tm.vec2):
     for i,j in VelocityStampField:
         Strength = tm.sin( (float(i) / InputVelocityStampSize) * tm.pi) * tm.sin( (float(j) / InputVelocityStampSize) * tm.pi)
-        VelocityField[tm.clamp(int(Pos.x * dim) + (i-(InputVelocityStampSize//2)), 0, dim-1), tm.clamp(int(Pos.y * dim) + (j-(InputVelocityStampSize//2)), 0, dim-1)] += Strength * Velocity * 200.
+        VelocityField[tm.clamp(int(Pos.x * dim) + (i-(InputVelocityStampSize//2)), 0, dim-1), tm.clamp(int(Pos.y * dim) + (j-(InputVelocityStampSize//2)), 0, dim-1)] += Strength * Velocity * 20.
     
 @ti.kernel
 def AdvectVelocity():
@@ -120,7 +120,7 @@ def DiffuseVelocity():
 
 #     for i,j in DieField_Old:
 #         if not (i == 0 or i == (dim-1) or j == 0 or j == (dim-1)) : #not an edge
-#             DieField[i,j] = Jacobi( tm.ivec2(i,j), Alpha, Beta, VelocityField_Old, VelocityField_Old) 
+#             DieField[i,j] = Jacobi( tm.ivec2(i,j), Alpha, Beta, DieField_Old, DieField_Old) 
 
 
 @ti.kernel
@@ -169,7 +169,8 @@ def EnforceBoundaryConditions_Die():
 @ti.kernel
 def GenerateDebugVelocityField():
     for i, j in VelocityField:  # Parallelized over all pixels
-        DebugVelocityField[i,j] = ((VelocityField[i,j] ) * 0.5) + 0.5
+        #DebugVelocityField[i,j] = ((VelocityField[i,j] ) * 0.5) + 0.5
+        DebugVelocityField[i,j] = tm.vec2(  VelocityField[i,j].x , -VelocityField[i,j].x )
 
 
 @ti.kernel
@@ -233,13 +234,10 @@ while gui.running:
     AddInputVelocity(PrevFrameCursorPos, Velocity)
     EnforceBoundaryConditions_Velocity()
     
-
     VelocityField_Old.copy_from(VelocityField)
     AdvectVelocity()
     EnforceBoundaryConditions_Velocity()
-
-    # print('Velocity Edge:', VelocityField[210,dim-1], 'Velocity neighbour', VelocityField[210,dim-2], )
-
+   
     VelocityField_Old.copy_from(VelocityField)
     for i in range( VelocityDiffusionIterationCount):
         DiffuseVelocity()
@@ -248,9 +246,6 @@ while gui.running:
         if not lastIteration:
             VelocityField_Old.copy_from(VelocityField)
     
-    #AddExternalForces()
-    #EnforceBoundaryConditions_Velocity()
-
     #Calculate divergence from velocity field
     CalculateDivergence()
 
@@ -264,10 +259,10 @@ while gui.running:
          #copy new to old - for next iteration
         if not lastIteration:
             PressureField_Old.copy_from(PressureField) #TODO: Ping pong instead of copy
+
     #remove gradient of Pressure from velocity (ie: remove divergence)
     RemoveDivergenceFromVelocity()
     EnforceBoundaryConditions_Velocity()
-
 
     DieField_Old.copy_from(DieField)
     AdvectDie()
@@ -282,8 +277,8 @@ while gui.running:
             gui.set_image(DieField)
         case 1:
             GenerateDebugVelocityField()
-            #gui.vector_field(VelocityField)
             gui.set_image(DebugVelocityField)
+            #gui.vector_field(VelocityField)
         case 2:
             gui.set_image(DivergenceField)
         case 3:
@@ -291,6 +286,5 @@ while gui.running:
             gui.set_image(DebugPressureField)
         case _:
             gui.set_image(DieField)
-
 
     gui.show()

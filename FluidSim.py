@@ -8,7 +8,7 @@ ti.init(arch=ti.gpu)
 
 dt = 16.6666e-3
 dim = 420
-Viscocity = 1.4
+Viscocity = 500.4
 
 VelocityField = ti.Vector.field(n=2, dtype=float, shape=(dim, dim))
 VelocityField_Old = ti.Vector.field(n=2, dtype=float, shape=(dim, dim))
@@ -46,7 +46,7 @@ def ReadInput(gui : ti.GUI, PrevFrameCursorPos : tm.vec2):
 def BilinearInterpolate(Coord, SampledField): 
     BL = SampledField[ tm.clamp( int(tm.floor( Coord.x)), 0, dim-1), tm.clamp( int(tm.floor( Coord.y)), 0, dim-1)]
     TL = SampledField[ tm.clamp( int(tm.floor( Coord.x)), 0, dim-1), tm.clamp( int(tm.ceil( Coord.y)), 0, dim-1)]
-    BR = SampledField[ tm.clamp( int(tm.floor( Coord.x)), 0, dim-1), tm.clamp( int(tm.floor( Coord.y)), 0, dim-1)]
+    BR = SampledField[ tm.clamp( int(tm.ceil( Coord.x)), 0, dim-1), tm.clamp( int(tm.floor( Coord.y)), 0, dim-1)]
     TR = SampledField[ tm.clamp( int(tm.ceil( Coord.x)), 0, dim-1), tm.clamp( int(tm.ceil( Coord.y)), 0, dim-1)]
 
     HoriBottom = tm.mix(BL, BR, tm.fract(Coord.x))
@@ -61,13 +61,13 @@ def Init():
 def Reset():
     ResetFields()
 
-InputVelocityStampSize = 20
+InputVelocityStampSize = 40
 VelocityStampField = ti.field(ti.i16, shape=(InputVelocityStampSize,InputVelocityStampSize))
 @ti.kernel
 def AddInputVelocity(Pos: tm.vec2, Velocity : tm.vec2):
     for i,j in VelocityStampField:
         Strength = tm.sin( (float(i) / InputVelocityStampSize) * tm.pi) * tm.sin( (float(j) / InputVelocityStampSize) * tm.pi)
-        VelocityField[tm.clamp(int(Pos.x * dim) + (i-10), 0, dim-1), tm.clamp(int(Pos.y * dim) + (j-10), 0, dim-1)] += Strength * Velocity * 200.
+        VelocityField[tm.clamp(int(Pos.x * dim) + (i-(InputVelocityStampSize//2)), 0, dim-1), tm.clamp(int(Pos.y * dim) + (j-(InputVelocityStampSize//2)), 0, dim-1)] += Strength * Velocity * 200.
     
 @ti.kernel
 def AdvectVelocity():
@@ -87,7 +87,7 @@ def CalculateDivergence():
         if i == 0 or i == (dim-1) or j == 0 or j == (dim-1):
             DivergenceField[i,j] = 0
         else:     
-            DivergenceField[i,j] = ((VelocityField[i+1,j].x - VelocityField[i-1,j].x) / 2. ) + ((VelocityField[i,j+1].y - VelocityField[i,j-1].y) / 2.) 
+            DivergenceField[i,j] = ((VelocityField[i+1,j].x - VelocityField[i-1,j].x)  + (VelocityField[i,j+1].y - VelocityField[i,j-1].y) / 2.) 
 
 @ti.func
 def Jacobi(Coord : tm.vec2, Alpha, Beta, FieldX, FieldB): # X & B refer to Ax = b
@@ -140,13 +140,13 @@ def RemoveDivergenceFromVelocity():
 def EnforceBoundaryConditions_Pressure():
     for i,j in PressureField:
         if i == 0:
-            PressureField[i,j] = PressureField_Old[i+1,j]
+            PressureField[i,j] = PressureField[i+1,j]
         elif i == (dim-1):
-            PressureField[i,j] = PressureField_Old[i-1,j]
+            PressureField[i,j] = PressureField[i-1,j]
         elif j == 0:
-            PressureField[i,j] = PressureField_Old[i,j+1]
+            PressureField[i,j] = PressureField[i,j+1]
         elif j == (dim-1):
-            PressureField[i,j] = PressureField_Old[i,j-1]
+            PressureField[i,j] = PressureField[i,j-1]
 
 @ti.kernel
 def EnforceBoundaryConditions_Velocity():
@@ -176,6 +176,12 @@ def GenerateDebugVelocityField():
 def GenerateDebugPressureField():
     for i,j in PressureField:
         DebugPressureField[i,j] = (PressureField[i,j] * 0.5) + 0.5
+
+@ti.kernel
+def StampDebugVelocity():
+    for i in range(100):
+        for j in range(20):
+            VelocityField[200+i,dim-1 - j] = tm.vec2(0.,1.) * 2000. 
 
 ###################
 ###################
@@ -214,6 +220,8 @@ while gui.running:
         elif gui.event.type == ti.GUI.PRESS:
             if gui.event.key == 'Control_L':
                 OverrideVelocity = True
+            elif gui.event.key == 'w':
+                StampDebugVelocity()
 
 
     ##############################
@@ -225,9 +233,12 @@ while gui.running:
     AddInputVelocity(PrevFrameCursorPos, Velocity)
     EnforceBoundaryConditions_Velocity()
     
+
     VelocityField_Old.copy_from(VelocityField)
     AdvectVelocity()
     EnforceBoundaryConditions_Velocity()
+
+    # print('Velocity Edge:', VelocityField[210,dim-1], 'Velocity neighbour', VelocityField[210,dim-2], )
 
     VelocityField_Old.copy_from(VelocityField)
     for i in range( VelocityDiffusionIterationCount):
@@ -236,7 +247,6 @@ while gui.running:
         lastIteration = (i == VelocityDiffusionIterationCount-1) 
         if not lastIteration:
             VelocityField_Old.copy_from(VelocityField)
-
     
     #AddExternalForces()
     #EnforceBoundaryConditions_Velocity()
@@ -256,6 +266,8 @@ while gui.running:
             PressureField_Old.copy_from(PressureField) #TODO: Ping pong instead of copy
     #remove gradient of Pressure from velocity (ie: remove divergence)
     RemoveDivergenceFromVelocity()
+    EnforceBoundaryConditions_Velocity()
+
 
     DieField_Old.copy_from(DieField)
     AdvectDie()

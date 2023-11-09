@@ -19,23 +19,23 @@ PressureField = ti.field(ti.f32, shape=(dim, dim))
 PressureField_Old = ti.field(ti.f32, shape=(dim, dim))
 DebugPressureField = ti.field(ti.f32, shape=(dim,dim))
 
-DieField = ti.Vector.field(n=3,dtype=ti.f32, shape=(dim,dim))
-DieField_Old = ti.Vector.field(n=3,dtype=ti.f32, shape=(dim,dim))
+DyeField = ti.Vector.field(n=3,dtype=ti.f32, shape=(dim,dim))
+DyeField_Old = ti.Vector.field(n=3,dtype=ti.f32, shape=(dim,dim))
 @ti.func
 def ResetFields():
     VelocityField.fill([0.0,0.0])
     DivergenceField.fill(0)
 
-    SetInitialDieSetup()
+    SetInitialDyeSetup()
 
 @ti.func
 def ClearPressure():  # complex square of a 2D vector
     VelocityField.fill([0.0,0.0])
 
 @ti.func
-def SetInitialDieSetup():
-    for i, j in DieField:  # Parallelized over all pixels
-        DieField[i,j] = tm.vec3( float(i) / dim, float(j) / dim, 0.5)
+def SetInitialDyeSetup():
+    for i, j in DyeField:  # Parallelized over all pixels
+        DyeField[i,j] = tm.vec3( float(i) / dim,  float(j) / dim, 0.)
 
 def ReadInput(gui : ti.GUI, PrevFrameCursorPos : tm.vec2):
     CursorPos = ti.Vector( gui.get_cursor_pos() )
@@ -44,14 +44,14 @@ def ReadInput(gui : ti.GUI, PrevFrameCursorPos : tm.vec2):
 
 @ti.func
 def BilinearInterpolate(Coord, SampledField): 
-    BL = SampledField[ tm.clamp( int(tm.floor( Coord.x)), 0, dim-1), tm.clamp( int(tm.floor( Coord.y)), 0, dim-1)]
-    TL = SampledField[ tm.clamp( int(tm.floor( Coord.x)), 0, dim-1), tm.clamp( int(tm.ceil( Coord.y)), 0, dim-1)]
-    BR = SampledField[ tm.clamp( int(tm.ceil( Coord.x)), 0, dim-1), tm.clamp( int(tm.floor( Coord.y)), 0, dim-1)]
-    TR = SampledField[ tm.clamp( int(tm.ceil( Coord.x)), 0, dim-1), tm.clamp( int(tm.ceil( Coord.y)), 0, dim-1)]
+    BL = SampledField[ tm.clamp( int( Coord.x - 0.5), 0, dim-1), tm.clamp( int( Coord.y - 0.5), 0, dim-1)]
+    TL = SampledField[ tm.clamp( int(Coord.x - 0.5), 0, dim-1), tm.clamp( int( Coord.y  + 0.5), 0, dim-1)]
+    BR = SampledField[ tm.clamp( int( Coord.x + 0.5), 0, dim-1), tm.clamp( int( Coord.y - 0.5), 0, dim-1)]
+    TR = SampledField[ tm.clamp( int( Coord.x + 0.5), 0, dim-1), tm.clamp( int(Coord.y + 0.5), 0, dim-1)]
 
-    HoriBottom = tm.mix(BL, BR, tm.fract(Coord.x))
-    HoriTop = tm.mix(TL, TR, tm.fract(Coord.x))
-    return tm.mix(HoriBottom, HoriTop, tm.fract(Coord.y))
+    HoriBottom = tm.mix(BL, BR, tm.fract( Coord.x  + 0.5 ) )
+    HoriTop = tm.mix(TL, TR, tm.fract( Coord.x  + 0.5 ) )
+    return tm.mix(HoriBottom, HoriTop, tm.fract( Coord.y + 0.5 ) )
 
 @ti.kernel
 def Init():
@@ -73,13 +73,13 @@ def AddInputVelocity(Pos: tm.vec2, Velocity : tm.vec2):
 def AdvectVelocity():
     for i, j in VelocityField:  # Parallelized over all pixels
         CurrCellVel = VelocityField_Old[i,j]
-        VelocityField[i,j] = BilinearInterpolate( tm.vec2(float(i) - (dim * CurrCellVel.x * dt), float(j) - (dim * CurrCellVel.y * dt) ), VelocityField_Old)
+        VelocityField[i,j] = BilinearInterpolate( tm.vec2(float(i) + 0.5 - (dim * CurrCellVel.x * dt), float(j) + 0.5 - (dim * CurrCellVel.y * dt) ), VelocityField_Old)
 
 @ti.kernel
-def AdvectDie():
+def AdvectDye():
     for i, j in VelocityField:  # Parallelized over all pixels
         CurrCellVel = VelocityField[i,j]
-        DieField[i,j] = BilinearInterpolate( tm.vec2(float(i) - (dim * CurrCellVel.x * dt), float(j) - (dim * CurrCellVel.y * dt)) , DieField_Old) 
+        DyeField[i,j] = BilinearInterpolate( tm.vec2(float(i) + 0.5 - (dim * CurrCellVel.x * dt), float(j) + 0.5 - (dim * CurrCellVel.y * dt)) , DyeField_Old) 
 
 @ti.kernel
 def CalculateDivergence():
@@ -87,7 +87,7 @@ def CalculateDivergence():
         if i == 0 or i == (dim-1) or j == 0 or j == (dim-1):
             DivergenceField[i,j] = 0
         else:     
-            DivergenceField[i,j] = ((VelocityField[i+1,j].x - VelocityField[i-1,j].x)  + (VelocityField[i,j+1].y - VelocityField[i,j-1].y) / 2.) 
+            DivergenceField[i,j] = ((VelocityField[i+1,j].x - VelocityField[i-1,j].x)  + (VelocityField[i,j+1].y - VelocityField[i,j-1].y) ) / 2. 
 
 @ti.func
 def Jacobi(Coord : tm.vec2, Alpha, Beta, FieldX, FieldB): # X & B refer to Ax = b
@@ -105,7 +105,7 @@ def ComputePressure():
 
 @ti.kernel
 def DiffuseVelocity():
-    Alpha = 1. / Viscocity * dt
+    Alpha = 1. / (Viscocity * dt)
     Beta = 1. / (4 + Alpha)
 
     for i,j in VelocityField_Old:
@@ -114,13 +114,13 @@ def DiffuseVelocity():
 
 
 # @ti.kernel
-# def DiffuseDie():
-#     Alpha = 1. / Viscocity * dt
+# def DiffuseDye():
+#     Alpha = 1. / (Viscocity * dt)
 #     Beta = 1. / (4 + Alpha)
 
-#     for i,j in DieField_Old:
+#     for i,j in DyeField_Old:
 #         if not (i == 0 or i == (dim-1) or j == 0 or j == (dim-1)) : #not an edge
-#             DieField[i,j] = Jacobi( tm.ivec2(i,j), Alpha, Beta, DieField_Old, DieField_Old) 
+#             DyeField[i,j] = Jacobi( tm.ivec2(i,j), Alpha, Beta, DyeField_Old, DyeField_Old) 
 
 
 @ti.kernel
@@ -161,16 +161,16 @@ def EnforceBoundaryConditions_Velocity():
             VelocityField[i,j] = -VelocityField[i,j-1]
 
 @ti.kernel
-def EnforceBoundaryConditions_Die():
+def EnforceBoundaryConditions_Dye():
     for i,j in VelocityField:
         if (i == 0 or i == (dim-1) or j == 0 or j == (dim-1)) : #if edge
-            DieField[i,j] = tm.vec3(0.,0.,0.)
+            DyeField[i,j] = tm.vec3(0.,0.,0.)
 
 @ti.kernel
 def GenerateDebugVelocityField():
     for i, j in VelocityField:  # Parallelized over all pixels
-        #DebugVelocityField[i,j] = ((VelocityField[i,j] ) * 0.5) + 0.5
-        DebugVelocityField[i,j] = tm.vec2(  VelocityField[i,j].x , -VelocityField[i,j].x )
+        DebugVelocityField[i,j] = ((VelocityField[i,j] ) * 0.5) + 0.5
+        #DebugVelocityField[i,j] = tm.vec2(  VelocityField[i,j].x , -VelocityField[i,j].x )
 
 
 @ti.kernel
@@ -264,9 +264,9 @@ while gui.running:
     RemoveDivergenceFromVelocity()
     EnforceBoundaryConditions_Velocity()
 
-    DieField_Old.copy_from(DieField)
-    AdvectDie()
-    EnforceBoundaryConditions_Die()
+    DyeField_Old.copy_from(DyeField)
+    AdvectDye()
+    EnforceBoundaryConditions_Dye()
 
 
     ##############################
@@ -274,7 +274,7 @@ while gui.running:
     ##############################
     match DisplayedBuffer:
         case 0:
-            gui.set_image(DieField)
+            gui.set_image(DyeField)
         case 1:
             GenerateDebugVelocityField()
             gui.set_image(DebugVelocityField)
@@ -285,6 +285,6 @@ while gui.running:
             GenerateDebugPressureField()
             gui.set_image(DebugPressureField)
         case _:
-            gui.set_image(DieField)
+            gui.set_image(DyeField)
 
     gui.show()

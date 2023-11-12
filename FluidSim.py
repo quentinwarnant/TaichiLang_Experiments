@@ -1,26 +1,40 @@
 import taichi as ti
 import taichi.math as tm
 
-import sys
-#sys.tracebacklimit=0 #shorter callstacks
+_DEBUG = True
 
-ti.init(arch=ti.gpu)
 
+# Configuration
 dt = 16.6666e-3
-dim = 420
-Viscocity = 1.0
+dim = 400
+Viscocity = 0.1
+PressureIterationCount = 60
+VelocityDiffusionIterationCount = 60
 
+
+# Taichi Initialisation
+if _DEBUG:
+    ti.init(arch=ti.gpu, kernel_profiler=True)
+else:
+    ti.init(arch=ti.gpu)
+
+# Buffer creation
 VelocityField = ti.Vector.field(n=2, dtype=float, shape=(dim, dim))
 VelocityField_Old = ti.Vector.field(n=2, dtype=float, shape=(dim, dim))
-DebugVelocityField = ti.Vector.field(n=2, dtype=float, shape=(dim, dim))
+if _DEBUG:
+    DebugVelocityField = ti.Vector.field(n=2, dtype=float, shape=(dim, dim))
 
 DivergenceField = ti.field(ti.f32, shape=(dim, dim))
 PressureField = ti.field(ti.f32, shape=(dim, dim))
 PressureField_Old = ti.field(ti.f32, shape=(dim, dim))
-DebugPressureField = ti.field(ti.f32, shape=(dim,dim))
+
+if _DEBUG:
+    DebugPressureField = ti.field(ti.f32, shape=(dim,dim))
 
 DyeField = ti.Vector.field(n=3,dtype=ti.f32, shape=(dim,dim))
 DyeField_Old = ti.Vector.field(n=3,dtype=ti.f32, shape=(dim,dim))
+
+# Functions and Kernels
 @ti.func
 def ResetFields():
     VelocityField.fill([0.0,0.0])
@@ -96,7 +110,7 @@ def Jacobi(Coord : tm.vec2, Alpha, Beta, FieldX, FieldB): # X & B refer to Ax = 
 
 @ti.kernel
 def ComputePressure():
-    Alpha = -1
+    Alpha = -1.
     Beta = 0.25
 
     for i,j in PressureField:
@@ -106,7 +120,7 @@ def ComputePressure():
 @ti.kernel
 def DiffuseVelocity():
     Alpha = 1. / (Viscocity * dt)
-    Beta = 1. / (4 + Alpha)
+    Beta = 1. / (4. + Alpha)
 
     for i,j in VelocityField_Old:
         if not (i == 0 or i == (dim-1) or j == 0 or j == (dim-1)) : #not an edge
@@ -166,42 +180,34 @@ def EnforceBoundaryConditions_Dye():
         if (i == 0 or i == (dim-1) or j == 0 or j == (dim-1)) : #if edge
             DyeField[i,j] = tm.vec3(0.,0.,0.)
 
-@ti.kernel
-def GenerateDebugVelocityField():
-    for i, j in VelocityField:  # Parallelized over all pixels
-        DebugVelocityField[i,j] = ((VelocityField[i,j] ) * 0.5) + 0.5
-        #DebugVelocityField[i,j] = tm.vec2(  VelocityField[i,j].x , -VelocityField[i,j].x )
+
+if _DEBUG:
+    @ti.kernel
+    def GenerateDebugVelocityField():
+        for i, j in VelocityField:  # Parallelized over all pixels
+            DebugVelocityField[i,j] = ((VelocityField[i,j] ) * 0.5) + 0.5
+
+    @ti.kernel
+    def GenerateDebugPressureField():
+        for i,j in PressureField:
+            DebugPressureField[i,j] = (PressureField[i,j] * 0.5) + 0.5
 
 
-@ti.kernel
-def GenerateDebugPressureField():
-    for i,j in PressureField:
-        DebugPressureField[i,j] = (PressureField[i,j] * 0.5) + 0.5
+###############################################################################################
+# Main Program
+###############################################################################################
 
-@ti.kernel
-def StampDebugVelocity():
-    for i in range(100):
-        for j in range(20):
-            VelocityField[200+i,dim-1 - j] = tm.vec2(0.,1.) * 2000. 
-
-###################
-###################
-###################
-###################
 PrevFrameCursorPos = tm.vec2(0.0,0.0) 
-gui = ti.GUI("Julia Set", res=(dim, dim))
+gui = ti.GUI("Eulerian Fluid Sim", res=(dim, dim))
 Init()
-PressureIterationCount = 60
-VelocityDiffusionIterationCount = 60
-
 DisplayedBuffer = 0
 
 while gui.running:
-
     ##############################
     ## Input
     ##############################
     OverrideVelocity = False
+    PrintScopedProfilerInfo = False
     #Keyboard input (espace to close, space to reset, A/Z/E/R to swap between buffer visualisation)
     if gui.get_event(ti.GUI.RELEASE, ti.GUI.PRESS):
         if gui.event.type == ti.GUI.RELEASE:
@@ -218,26 +224,35 @@ while gui.running:
                 DisplayedBuffer = 2
             if  gui.event.key == 'r':
                 DisplayedBuffer = 3
+            if  gui.event.key == 'd':
+                PrintScopedProfilerInfo = True
         elif gui.event.type == ti.GUI.PRESS:
             if gui.event.key == 'Control_L':
                 OverrideVelocity = True
-            elif gui.event.key == 'w':
-                StampDebugVelocity()
 
+
+    if _DEBUG and PrintScopedProfilerInfo:
+        ti.profiler.clear_kernel_profiler_info() 
+        ti.sync()
 
     ##############################
     ## Fluid Sim
     ##############################
+    
+    # Add velocity with cursor input
     PrevFrameCursorPos, Velocity = ReadInput(gui, PrevFrameCursorPos)
     if OverrideVelocity:
-        Velocity = tm.vec2(0.,1.)
+        Velocity = tm.vec2(0.,.2)
+
     AddInputVelocity(PrevFrameCursorPos, Velocity)
     EnforceBoundaryConditions_Velocity()
-    
+
+    # Advect Velocity
     VelocityField_Old.copy_from(VelocityField)
     AdvectVelocity()
     EnforceBoundaryConditions_Velocity()
-   
+
+    # Diffuse Velocity
     VelocityField_Old.copy_from(VelocityField)
     for i in range( VelocityDiffusionIterationCount):
         DiffuseVelocity()
@@ -245,13 +260,13 @@ while gui.running:
         lastIteration = (i == VelocityDiffusionIterationCount-1) 
         if not lastIteration:
             VelocityField_Old.copy_from(VelocityField)
-    
+
     #Calculate divergence from velocity field
     CalculateDivergence()
 
+    # Solve Pressure
     PressureField.fill(0)
     PressureField_Old.fill(0)
-    #Solve Pressure
     for i in range(PressureIterationCount): 
         ComputePressure()
         EnforceBoundaryConditions_Pressure()
@@ -260,10 +275,11 @@ while gui.running:
         if not lastIteration:
             PressureField_Old.copy_from(PressureField) #TODO: Ping pong instead of copy
 
-    #remove gradient of Pressure from velocity (ie: remove divergence)
+    #Project Pressure / remove Divergence (gradient of Pressure) from velocity field - incompressible fluids
     RemoveDivergenceFromVelocity()
     EnforceBoundaryConditions_Velocity()
 
+    # Advect Dye
     DyeField_Old.copy_from(DyeField)
     AdvectDye()
     EnforceBoundaryConditions_Dye()
@@ -288,3 +304,6 @@ while gui.running:
             gui.set_image(DyeField)
 
     gui.show()
+
+    if _DEBUG and PrintScopedProfilerInfo:
+        ti.profiler.print_kernel_profiler_info()

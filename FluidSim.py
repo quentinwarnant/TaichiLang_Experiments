@@ -163,7 +163,7 @@ def EnforceBoundaryConditions_Pressure():
 
 @ti.kernel
 def EnforceBoundaryConditions_Velocity():
-     for i,j in ti.ndrange(4,dim):
+    for i,j in ti.ndrange(4,dim):
         if i == 0:  #Left Boundary
             VelocityField[0,j] = -VelocityField[1,j]
         elif i == 1: #Right Boundary
@@ -175,7 +175,7 @@ def EnforceBoundaryConditions_Velocity():
 
 @ti.kernel
 def EnforceBoundaryConditions_Dye():
-     for i,j in ti.ndrange(4,dim):
+    for i,j in ti.ndrange(4,dim):
         if i == 0:  #Left Boundary
             DyeField[0,j] = tm.vec3(0.,0.,0.)
         elif i == 1: #Right Boundary

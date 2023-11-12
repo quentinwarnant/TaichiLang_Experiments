@@ -49,9 +49,9 @@ def BilinearInterpolate(Coord, SampledField):
     BR = SampledField[ tm.clamp( int( Coord.x + 0.5), 0, dim-1), tm.clamp( int( Coord.y - 0.5), 0, dim-1)]
     TR = SampledField[ tm.clamp( int( Coord.x + 0.5), 0, dim-1), tm.clamp( int(Coord.y + 0.5), 0, dim-1)]
 
-    HoriBottom = tm.mix(BL, BR, tm.fract( Coord.x  + 0.5 ) )
-    HoriTop = tm.mix(TL, TR, tm.fract( Coord.x  + 0.5 ) )
-    return tm.mix(HoriBottom, HoriTop, tm.fract( Coord.y + 0.5 ) )
+    HoriBottom = tm.mix(BL, BR, tm.fract( Coord.x  - 0.5 ) )
+    HoriTop = tm.mix(TL, TR, tm.fract( Coord.x  - 0.5 ) )
+    return tm.mix(HoriBottom, HoriTop, tm.fract( Coord.y - 0.5 ) )
 
 @ti.kernel
 def Init():

@@ -2,7 +2,6 @@
 Questions:
 
 Fluid Sim:
-- Velocity free/zero slip
 - Staggered Grid
 
 Taichi:

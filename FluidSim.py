@@ -1,8 +1,7 @@
 import taichi as ti
 import taichi.math as tm
 
-_DEBUG = True
-
+_DEBUG = False
 
 # Configuration
 dt = 16.6666e-3
@@ -152,33 +151,39 @@ def RemoveDivergenceFromVelocity():
 
 @ti.kernel
 def EnforceBoundaryConditions_Pressure():
-    for i,j in PressureField:
-        if i == 0:
-            PressureField[i,j] = PressureField[i+1,j]
-        elif i == (dim-1):
-            PressureField[i,j] = PressureField[i-1,j]
-        elif j == 0:
-            PressureField[i,j] = PressureField[i,j+1]
-        elif j == (dim-1):
-            PressureField[i,j] = PressureField[i,j-1]
+    for i,j in ti.ndrange(4,dim):
+        if i == 0: #Left Boundary
+            PressureField[0,j] = PressureField[1,j]
+        elif i == 1: #Right Boundary
+            PressureField[dim-1,j] = PressureField[dim-2,j]
+        elif i == 2: #Bottom Boundary
+            PressureField[j,0] = PressureField[j,1]
+        elif i == 3: #Top Boundary
+            PressureField[j,dim-1] = PressureField[j,dim-2]
 
 @ti.kernel
 def EnforceBoundaryConditions_Velocity():
-    for i,j in VelocityField:
-        if i == 0:
-            VelocityField[i,j] = -VelocityField[i+1,j]
-        elif i == (dim-1):
-            VelocityField[i,j] = -VelocityField[i-1,j]
-        elif j == 0:
-            VelocityField[i,j] = -VelocityField[i,j+1]
-        elif j == (dim-1):
-            VelocityField[i,j] = -VelocityField[i,j-1]
+     for i,j in ti.ndrange(4,dim):
+        if i == 0:  #Left Boundary
+            VelocityField[0,j] = -VelocityField[1,j]
+        elif i == 1: #Right Boundary
+            VelocityField[dim-1,j] = -VelocityField[dim-2,j]
+        elif i == 2: #Bottom Boundary
+            VelocityField[j,0] = -VelocityField[j,1]
+        elif i ==  3: #Top Boundary
+            VelocityField[j,dim-1] = -VelocityField[j,dim-2]
 
 @ti.kernel
 def EnforceBoundaryConditions_Dye():
-    for i,j in VelocityField:
-        if (i == 0 or i == (dim-1) or j == 0 or j == (dim-1)) : #if edge
-            DyeField[i,j] = tm.vec3(0.,0.,0.)
+     for i,j in ti.ndrange(4,dim):
+        if i == 0:  #Left Boundary
+            DyeField[0,j] = tm.vec3(0.,0.,0.)
+        elif i == 1: #Right Boundary
+            DyeField[dim-1,j] = tm.vec3(0.,0.,0.)
+        elif i == 2: #Bottom Boundary
+            DyeField[j,0] = tm.vec3(0.,0.,0.)
+        elif i ==  3: #Top Boundary
+            DyeField[j,dim-1] = tm.vec3(0.,0.,0.)
 
 
 if _DEBUG:
@@ -292,14 +297,19 @@ while gui.running:
         case 0:
             gui.set_image(DyeField)
         case 1:
-            GenerateDebugVelocityField()
-            gui.set_image(DebugVelocityField)
-            #gui.vector_field(VelocityField)
+            if _DEBUG:
+                GenerateDebugVelocityField()
+                gui.set_image(DebugVelocityField)
+            else:
+                gui.vector_field(VelocityField)
         case 2:
             gui.set_image(DivergenceField)
         case 3:
-            GenerateDebugPressureField()
-            gui.set_image(DebugPressureField)
+            if _DEBUG:
+                GenerateDebugPressureField()
+                gui.set_image(DebugPressureField)
+            else:
+                gui.set_image(PressureField)
         case _:
             gui.set_image(DyeField)
 

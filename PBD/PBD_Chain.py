@@ -6,6 +6,7 @@ _DEBUG = False
 DT = 0.33
 Substeps = 10
 Gravity = -1.18
+INF_MASS = -1.
 
 # Taichi Initialisation
 if _DEBUG:
@@ -13,12 +14,13 @@ if _DEBUG:
 else:
     ti.init(arch=ti.gpu)
 
-PC = 5 #Particle Count
+PC = 10 #Particle Count
 ConstraintCount = PC-1
 
 @ti.dataclass
 class Particle:
     Pos : tm.vec2
+    PrevPos : tm.vec2
     Vel : tm.vec2
     #Radius : ti.f16
     Mass : ti.f32
@@ -26,13 +28,13 @@ class Particle:
 
 
 #TODO: move all these values into a class if it's more efficient?
-Positions = ti.field(dtype=tm.vec2, shape=(PC))
-Velocities = ti.field(dtype=tm.vec2, shape=(PC))
-#Radii = ti.field(dtype=ti.f16, shape=(PC))
-Masses = ti.field(dtype=ti.f16, shape=(PC) )
+# Positions = ti.field(dtype=tm.vec2, shape=(PC))
+# Velocities = ti.field(dtype=tm.vec2, shape=(PC))
+# #Radii = ti.field(dtype=ti.f16, shape=(PC))
+# Masses = ti.field(dtype=ti.f16, shape=(PC) )
 Particles = Particle.field(shape=(PC))
 
-PrevPositions = ti.field(dtype=tm.vec2, shape=(PC))
+# PrevPositions = ti.field(dtype=tm.vec2, shape=(PC))
 Constraints = ti.Vector.field(n=2, dtype=ti.int32, shape=(ConstraintCount))
 RestLengths = ti.field(dtype=ti.f32, shape=(ConstraintCount) )
 
@@ -41,12 +43,16 @@ def SolveLinearConstraint( IndexA : ti.int32, IndexB : ti.int32, deltaTime : ti.
     
     #TODO: don't calculate this each time
     #inverse mass calc:
-    w1 = 1./Masses[IndexA]
-    w2 = 1./Masses[IndexB]
+    ParticleAMass = Particles[IndexA].Mass
+    ParticleBMass = Particles[IndexB].Mass
+     
+    # Negative mass stands for Infinite mass
+    w1 = 1./ParticleAMass if ParticleAMass > 0 else 0
+    w2 = 1./ParticleBMass if ParticleBMass > 0 else 0
 
     # Current Distance
-    Pos1 = Positions[IndexA]
-    Pos2 = Positions[IndexB]
+    Pos1 = Particles[IndexA].Pos
+    Pos2 = Particles[IndexB].Pos
     l = tm.length(Pos1 - Pos2) # current length
     l0 = RestLengths[IndexA] #rest length
 
@@ -54,35 +60,31 @@ def SolveLinearConstraint( IndexA : ti.int32, IndexB : ti.int32, deltaTime : ti.
     dX1 = w1/(w1+w2) * (l-l0) * tm.normalize(Pos2 - Pos1)
     dX2 = -w2/(w1+w2) * (l-l0) * tm.normalize(Pos2 - Pos1)
 
-    Positions[IndexA] += dX1
-    Positions[IndexB] += dX2
+    Particles[IndexA].Pos += dX1
+    Particles[IndexB].Pos += dX2
 
     #TODO: integrate deltaTime & stiffness factor
 
 
 @ti.kernel
 def Init():
-    Velocities.fill((0,0))
-    Masses.fill(ti.f16(1.))
-    Masses[0] = ti.f16(300000.)
-    #Masses[4] = ti.f16(900000.)
-    
-    for i in Positions:  # Parallelized over all particles
-        Positions[i] = tm.vec2(  0.3 + i * 0.06 , 0.7   )
-        #Radii[i] = ti.f16(0.05) + ti.random(dtype=ti.f16) * ti.f16(0.2)
+    for i in range(PC):  # Parallelized over all particles
+        ParticleMass = INF_MASS if i == 0 else 1
+        Particles[i] = Particle( Pos=tm.vec2(  0.3 + i * 0.06 , 0.7   ), Vel=tm.vec2(0,0), Mass=ParticleMass)
+        Particles[i].PrevPos = Particles[i].Pos
 
     for i in Constraints:
         Constraints[i] = (i,i+1)
-        RestLengths[i] = tm.length( Positions[i] - Positions[i+1])
+        RestLengths[i] = tm.length( Particles[i].Pos - Particles[i+1].Pos)
 
 @ti.kernel
 def IntegrateForces(deltaTime : ti.f16):
-    for i in Positions: # Parallelized over all particles
+    for i in range(PC): # Parallelized over all particles
         #HACK: cheap temp hack for intermediate testing
-        if Masses[i] < 2. :
-            Velocities[i] += tm.vec2(0.0, Gravity) * deltaTime
-        PrevPositions[i] = Positions[i]
-        Positions[i] += Velocities[i] * deltaTime
+        if Particles[i].Mass != INF_MASS:
+            Particles[i].Vel += tm.vec2(0.0, Gravity) * deltaTime
+        Particles[i].PrevPos = Particles[i].Pos
+        Particles[i].Pos += Particles[i].Vel * deltaTime
 
 @ti.kernel
 def SolveConstraints(deltaTime : ti.f16):
@@ -93,18 +95,21 @@ def SolveConstraints(deltaTime : ti.f16):
 
 @ti.kernel
 def UpdateVelocities(deltaTime : ti.f16):
-    for i in Velocities: # Parallelized over all particles
-        Velocities[i] = (Positions[i] - PrevPositions[i]) / deltaTime
-
-
+    for i in range(PC): # Parallelized over all particles
+        Particles[i].Vel = (Particles[i].Pos - Particles[i].PrevPos) / deltaTime
 
 LineIndices = ti.field( dtype=ti.int32, shape=(ConstraintCount*2))
-
 def GenerateLineIndices():
     for i in range(ConstraintCount):
         LineIndices[i*2] = i
         LineIndices[(i*2)+1] = i+1
         
+
+Positions = ti.field(dtype=tm.vec2, shape=(PC))
+@ti.kernel
+def ExtractParticlePositions():
+    for i in range(PC): # Parallelized over all particles
+        Positions[i] = Particles[i].Pos
     
 
 window = ti.ui.Window(name='Position Based Dynamic - Chain', res = (1080, 720), fps_limit=30, pos = (1050, 350))
@@ -131,6 +136,7 @@ while window.running:
         UpdateVelocities(substepDT)
     #######
 
+    ExtractParticlePositions()
 
     canvas.circles(Positions, 0.02)
     canvas.lines(Positions, 0.01,LineIndices)

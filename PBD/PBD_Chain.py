@@ -1,5 +1,6 @@
 import taichi as ti
 import taichi.math as tm
+from enum import Enum
 
 _DEBUG = False
 
@@ -7,6 +8,7 @@ DT = 0.33
 Substeps = 10
 Gravity = -1.18
 INF_MASS = -1.
+Stiffness = 0.98
 
 # Taichi Initialisation
 if _DEBUG:
@@ -66,7 +68,6 @@ def Init():
         Particles[i] = Particle( Pos=tm.vec2(  0.3 + i * 0.06 , 0.7   ), Vel=tm.vec2(0,0), Mass=ParticleMass)
         Particles[i].PrevPos = Particles[i].Pos
 
-    Stiffness = 0.95
     for i in Constraints:
         Constraints[i] = (i,i+1)
         RestLengths[i] = tm.length( Particles[i].Pos - Particles[i+1].Pos)
@@ -105,11 +106,38 @@ def ExtractParticlePositions():
     for i in range(PC): # Parallelized over all particles
         Positions[i] = Particles[i].Pos
     
+SelectedPointIdx = -1
+PointSelectionRangeSqr = 1
+@ti.kernel
+def FindNearbyPoint(cursorPos : tm.vec2) -> ti.i16:
+    idxClosest = 0
+    closestDistSqr = tm.dot( (Particles[0].Pos - cursorPos), (Particles[0].Pos - cursorPos))
+
+    ti.loop_config(serialize=True) # Serializes the next for loop
+    for i in range(1,PC):
+        tmpVec = (Particles[i].Pos - cursorPos)
+        tmpDistSqr = tm.dot( tmpVec, tmpVec) 
+        if tmpDistSqr < closestDistSqr:
+            idxClosest = i
+            closestDistSqr = tmpDistSqr
+    
+    return idxClosest if closestDistSqr < PointSelectionRangeSqr else -1
+
+def MoveSelectedPoint(cursorPos):
+    Particles[SelectedPointIdx].Pos = cursorPos
+    Particles[SelectedPointIdx].PrevPos = cursorPos
 
 window = ti.ui.Window(name='Position Based Dynamic - Chain', res = (1080, 720), fps_limit=30, pos = (1050, 350))
 canvas = window.get_canvas()
-Init()
 
+class SelectionMode(Enum):
+    Unselected = 1
+    Selecting = 2
+    Dragging = 3
+
+CurrentSelectionMode : SelectionMode = SelectionMode.Unselected
+
+Init()
 GenerateLineIndices()
 
 while window.running:
@@ -119,6 +147,19 @@ while window.running:
             break
         if window.event.key == 'r':
             Init()
+        if window.event.key == ti.ui.LMB:
+            CurrentSelectionMode = SelectionMode.Unselected
+
+    if window.get_event( ti.ui.PRESS ):
+        if window.event.key == ti.ui.LMB:
+            CurrentSelectionMode = SelectionMode.Selecting
+            SelectedPointIdx = FindNearbyPoint( ti.Vector(window.get_cursor_pos()))
+            if SelectedPointIdx != -1:
+                CurrentSelectionMode = SelectionMode.Dragging
+                
+
+    if CurrentSelectionMode == SelectionMode.Dragging:
+        MoveSelectedPoint( ti.Vector(window.get_cursor_pos()))
 
     ########
     # PDB

@@ -25,72 +25,66 @@ class Particle:
     #Radius : ti.f16
     Mass : ti.f32
 
-
-
-#TODO: move all these values into a class if it's more efficient?
-# Positions = ti.field(dtype=tm.vec2, shape=(PC))
-# Velocities = ti.field(dtype=tm.vec2, shape=(PC))
-# #Radii = ti.field(dtype=ti.f16, shape=(PC))
-# Masses = ti.field(dtype=ti.f16, shape=(PC) )
 Particles = Particle.field(shape=(PC))
 
-# PrevPositions = ti.field(dtype=tm.vec2, shape=(PC))
 Constraints = ti.Vector.field(n=2, dtype=ti.int32, shape=(ConstraintCount))
 RestLengths = ti.field(dtype=ti.f32, shape=(ConstraintCount) )
+ComplianceFactors = ti.field(dtype=ti.f16, shape=(ConstraintCount))
 
 @ti.func
-def SolveLinearConstraint( IndexA : ti.int32, IndexB : ti.int32, deltaTime : ti.f16 ):
+def SolveLinearConstraint( IndexA : ti.int32, IndexB : ti.int32, deltaTimeSqr : ti.f16 ):
     
     #TODO: don't calculate this each time
     #inverse mass calc:
     ParticleAMass = Particles[IndexA].Mass
     ParticleBMass = Particles[IndexB].Mass
-     
+
     # Negative mass stands for Infinite mass
     w1 = 1./ParticleAMass if ParticleAMass > 0 else 0
     w2 = 1./ParticleBMass if ParticleBMass > 0 else 0
 
     # Current Distance
-    Pos1 = Particles[IndexA].Pos
-    Pos2 = Particles[IndexB].Pos
-    l = tm.length(Pos1 - Pos2) # current length
+    PosA = Particles[IndexA].Pos
+    PosB = Particles[IndexB].Pos
+    AToB = PosB-PosA
+    DirAToB = tm.normalize(AToB)
+    l = tm.length(AToB) # current length
     l0 = RestLengths[IndexA] #rest length
+    lengthDiff = (l-l0)
+    weightSum = w1+w2 + (ComplianceFactors[IndexA]/deltaTimeSqr)
 
-    #TODO: only compute parts once
-    dX1 = w1/(w1+w2) * (l-l0) * tm.normalize(Pos2 - Pos1)
-    dX2 = -w2/(w1+w2) * (l-l0) * tm.normalize(Pos2 - Pos1)
+    dX1 = w1/(weightSum) * lengthDiff * DirAToB
+    dX2 = -w2/(weightSum) * lengthDiff * DirAToB
 
     Particles[IndexA].Pos += dX1
     Particles[IndexB].Pos += dX2
 
-    #TODO: integrate deltaTime & stiffness factor
-
-
 @ti.kernel
 def Init():
     for i in range(PC):  # Parallelized over all particles
-        ParticleMass = INF_MASS if i == 0 else 1
+        ParticleMass = INF_MASS if (i == 0 or i == 6) else 1
         Particles[i] = Particle( Pos=tm.vec2(  0.3 + i * 0.06 , 0.7   ), Vel=tm.vec2(0,0), Mass=ParticleMass)
         Particles[i].PrevPos = Particles[i].Pos
 
+    Stiffness = 0.95
     for i in Constraints:
         Constraints[i] = (i,i+1)
         RestLengths[i] = tm.length( Particles[i].Pos - Particles[i+1].Pos)
+        ComplianceFactors[i] = ti.f16(1. - Stiffness) #Compliance is the inverse of (stiffness)
 
 @ti.kernel
 def IntegrateForces(deltaTime : ti.f16):
     for i in range(PC): # Parallelized over all particles
-        #HACK: cheap temp hack for intermediate testing
-        if Particles[i].Mass != INF_MASS:
-            Particles[i].Vel += tm.vec2(0.0, Gravity) * deltaTime
+        InvMass = (1./Particles[i].Mass)  if Particles[i].Mass != INF_MASS else 0.
+        Particles[i].Vel += InvMass * tm.vec2(0.0, Gravity) * deltaTime
         Particles[i].PrevPos = Particles[i].Pos
         Particles[i].Pos += Particles[i].Vel * deltaTime
 
 @ti.kernel
-def SolveConstraints(deltaTime : ti.f16):
+def SolveConstraints( deltaTimeSqr : ti.f16):
     ti.loop_config(serialize=True) # Serializes the next for loop
     for i in range(PC-1):
-        SolveLinearConstraint(Constraints[i].x, Constraints[i].y, deltaTime )
+        SolveLinearConstraint(Constraints[i].x, Constraints[i].y, deltaTimeSqr )
     
 
 @ti.kernel
@@ -130,9 +124,10 @@ while window.running:
     # PDB
     #######
     substepDT = DT / Substeps
+    substepDTSqr = substepDT * substepDT
     for n in range(Substeps):
         IntegrateForces(substepDT)
-        SolveConstraints(substepDT)
+        SolveConstraints(substepDTSqr)
         UpdateVelocities(substepDT)
     #######
 

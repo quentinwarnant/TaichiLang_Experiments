@@ -18,7 +18,7 @@ if _DEBUG:
 else:
     ti.init(arch=ti.gpu)
 
-PC = 10 #Particle Count
+PC = 25 #Particle Count
 ConstraintCount = PC-1
 
 @ti.dataclass
@@ -43,11 +43,17 @@ RestLengths = ti.field(dtype=ti.f32, shape=(ConstraintCount) )
 ComplianceFactors = ti.field(dtype=ti.f16, shape=(ConstraintCount))
 
 @ti.func
-def SolveLinearConstraint( IndexA : ti.int32, IndexB : ti.int32, deltaTimeSqr : ti.f16 ):
+def SolveLinearConstraint( IndexA : ti.int32, IndexB : ti.int32, deltaTimeSqr : ti.f16, SelectedPointIdx : ti.i32 ):
     
     # Negative mass stands for Infinite mass
     w1 = Particles[IndexA].InvMass
     w2 = Particles[IndexB].InvMass
+
+    if SelectedPointIdx == IndexA:
+        w1 = 0
+    elif SelectedPointIdx == IndexB:
+        w2 = 0
+
 
     # Current Distance
     PosA = Particles[IndexA].Pos
@@ -68,8 +74,8 @@ def SolveLinearConstraint( IndexA : ti.int32, IndexB : ti.int32, deltaTimeSqr : 
 @ti.kernel
 def Init():
     for i in range(PC):  # Parallelized over all particles
-        ParticleMass = INF_MASS if (i == 0 or i == 6) else 1
-        Particles[i] = Particle( Pos=tm.vec2(  0.3 + i * 0.06 , 0.7   ), Vel=tm.vec2(0,0), Radius=ParticleRadius, Mass=ParticleMass)
+        ParticleMass = INF_MASS if (i == 0 or i == 6 or i == 14) else 1
+        Particles[i] = Particle( Pos=tm.vec2(  0.1 + i * 0.052 , 0.7   ), Vel=tm.vec2(0,0), Radius=ParticleRadius, Mass=ParticleMass)
         Particles[i].Init()
 
     for i in Constraints:
@@ -78,18 +84,18 @@ def Init():
         ComplianceFactors[i] = ti.f16(1. - Stiffness) #Compliance is the inverse of (stiffness)
 
 @ti.kernel
-def IntegrateForces(deltaTime : ti.f16):
+def IntegrateForces(deltaTime : ti.f16, SelectedPointIdx : ti.i32):
     for i in range(PC): # Parallelized over all particles
-        InvMass = (1./Particles[i].Mass)  if Particles[i].Mass != INF_MASS else 0.
-        Particles[i].Vel += InvMass * tm.vec2(0.0, Gravity) * deltaTime
-        Particles[i].PrevPos = Particles[i].Pos
-        Particles[i].Pos += Particles[i].Vel * deltaTime
+        if i != SelectedPointIdx: #don't integrate forces for point being dragged
+            Particles[i].Vel += Particles[i].InvMass * tm.vec2(0.0, Gravity) * deltaTime
+            Particles[i].PrevPos = Particles[i].Pos
+            Particles[i].Pos += Particles[i].Vel * deltaTime
 
 @ti.kernel
-def SolveConstraints( deltaTimeSqr : ti.f16):
+def SolveConstraints( deltaTimeSqr : ti.f16, SelectedPointIdx : ti.i32):
     ti.loop_config(serialize=True) # Serializes the next for loop
     for i in range(PC-1):
-        SolveLinearConstraint(Constraints[i].x, Constraints[i].y, deltaTimeSqr )
+        SolveLinearConstraint(Constraints[i].x, Constraints[i].y, deltaTimeSqr, SelectedPointIdx )
     
 @ti.kernel
 def SolveIntersections(deltaTime : ti.f16):
@@ -177,6 +183,7 @@ while window.running:
             Init()
         if window.event.key == ti.ui.LMB:
             CurrentSelectionMode = SelectionMode.Unselected
+            SelectedPointIdx = -1
 
     if window.get_event( ti.ui.PRESS ):
         if window.event.key == ti.ui.LMB:
@@ -195,8 +202,8 @@ while window.running:
     substepDT = DT / Substeps
     substepDTSqr = substepDT * substepDT
     for n in range(Substeps):
-        IntegrateForces(substepDT)
-        SolveConstraints(substepDTSqr)
+        IntegrateForces(substepDT, SelectedPointIdx)
+        SolveConstraints(substepDTSqr, SelectedPointIdx)
         SolveIntersections(substepDT)
         UpdateVelocities(substepDT)
     #######

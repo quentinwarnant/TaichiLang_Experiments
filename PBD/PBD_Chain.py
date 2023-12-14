@@ -4,11 +4,13 @@ from enum import Enum
 
 _DEBUG = False
 
+WindowRes = (1080, 720)
 DT = 0.33
 Substeps = 10
 Gravity = -1.18
 INF_MASS = -1.
-Stiffness = 0.98
+Stiffness = 1.
+ParticleRadius = WindowRes[0] / 50000
 
 # Taichi Initialisation
 if _DEBUG:
@@ -24,8 +26,15 @@ class Particle:
     Pos : tm.vec2
     PrevPos : tm.vec2
     Vel : tm.vec2
-    #Radius : ti.f16
+    Radius : ti.f16
     Mass : ti.f32
+    InvMass : ti.f32
+
+    @ti.func
+    def Init(self):
+        self.InvMass = 1.0 / self.Mass if self.Mass > 0 else 0
+        self.PrevPos = self.Pos
+        
 
 Particles = Particle.field(shape=(PC))
 
@@ -36,14 +45,9 @@ ComplianceFactors = ti.field(dtype=ti.f16, shape=(ConstraintCount))
 @ti.func
 def SolveLinearConstraint( IndexA : ti.int32, IndexB : ti.int32, deltaTimeSqr : ti.f16 ):
     
-    #TODO: don't calculate this each time
-    #inverse mass calc:
-    ParticleAMass = Particles[IndexA].Mass
-    ParticleBMass = Particles[IndexB].Mass
-
     # Negative mass stands for Infinite mass
-    w1 = 1./ParticleAMass if ParticleAMass > 0 else 0
-    w2 = 1./ParticleBMass if ParticleBMass > 0 else 0
+    w1 = Particles[IndexA].InvMass
+    w2 = Particles[IndexB].InvMass
 
     # Current Distance
     PosA = Particles[IndexA].Pos
@@ -65,8 +69,8 @@ def SolveLinearConstraint( IndexA : ti.int32, IndexB : ti.int32, deltaTimeSqr : 
 def Init():
     for i in range(PC):  # Parallelized over all particles
         ParticleMass = INF_MASS if (i == 0 or i == 6) else 1
-        Particles[i] = Particle( Pos=tm.vec2(  0.3 + i * 0.06 , 0.7   ), Vel=tm.vec2(0,0), Mass=ParticleMass)
-        Particles[i].PrevPos = Particles[i].Pos
+        Particles[i] = Particle( Pos=tm.vec2(  0.3 + i * 0.06 , 0.7   ), Vel=tm.vec2(0,0), Radius=ParticleRadius, Mass=ParticleMass)
+        Particles[i].Init()
 
     for i in Constraints:
         Constraints[i] = (i,i+1)
@@ -87,6 +91,30 @@ def SolveConstraints( deltaTimeSqr : ti.f16):
     for i in range(PC-1):
         SolveLinearConstraint(Constraints[i].x, Constraints[i].y, deltaTimeSqr )
     
+@ti.kernel
+def SolveIntersections(deltaTime : ti.f16):
+    
+    TwoRadius = ParticleRadius * 2
+    #TODO: potential to iterate through spatial partitioned cells instead of serially here
+    ti.loop_config(serialize=True) # Serializes the next loop
+    for i in range(PC-1):
+        for j in range(i+1,PC):
+            #A To B vector
+            Dir = (Particles[j].Pos - Particles[i].Pos)
+            LengthBetweenPositions = tm.length(Dir)
+            if  LengthBetweenPositions < TwoRadius :
+                #intersection
+                DirAToB = tm.normalize(Dir)
+                IntersectionAmount =  abs(TwoRadius - LengthBetweenPositions)
+                w1 = Particles[i].InvMass
+                w2 = Particles[j].InvMass
+
+                weightSum = w1+w2
+                dX1 = -w1/(weightSum) * IntersectionAmount * DirAToB
+                dX2 = w2/(weightSum) * IntersectionAmount * DirAToB
+
+                Particles[i].Pos += dX1
+                Particles[j].Pos += dX2
 
 @ti.kernel
 def UpdateVelocities(deltaTime : ti.f16):
@@ -127,7 +155,7 @@ def MoveSelectedPoint(cursorPos):
     Particles[SelectedPointIdx].Pos = cursorPos
     Particles[SelectedPointIdx].PrevPos = cursorPos
 
-window = ti.ui.Window(name='Position Based Dynamic - Chain', res = (1080, 720), fps_limit=30, pos = (1050, 350))
+window = ti.ui.Window(name='Position Based Dynamic - Chain', res = WindowRes, fps_limit=30, pos = (1050, 350))
 canvas = window.get_canvas()
 
 class SelectionMode(Enum):
@@ -169,11 +197,12 @@ while window.running:
     for n in range(Substeps):
         IntegrateForces(substepDT)
         SolveConstraints(substepDTSqr)
+        SolveIntersections(substepDT)
         UpdateVelocities(substepDT)
     #######
 
     ExtractParticlePositions()
 
-    canvas.circles(Positions, 0.02)
+    canvas.circles(Positions, ParticleRadius) #TODO: report to taichi, circles radius is not in pixels unit
     canvas.lines(Positions, 0.01,LineIndices)
     window.show()

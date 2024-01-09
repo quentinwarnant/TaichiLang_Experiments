@@ -3,6 +3,7 @@ import taichi.math as tm
 from enum import Enum
 
 _DEBUG = False
+_INVALID_CONSTRAINT = -1
 
 WindowRes = (1080, 720)
 DT = 0.33
@@ -11,6 +12,7 @@ Gravity = -1.18
 INF_MASS = -1.
 Stiffness = 1.
 ParticleRadius = WindowRes[0] / 50000
+RopeCount = 1
 
 # Taichi Initialisation
 if _DEBUG:
@@ -73,6 +75,7 @@ def SolveLinearConstraint( IndexA : ti.int32, IndexB : ti.int32, deltaTimeSqr : 
 
 @ti.kernel
 def Init():
+    RopeCount = 1
     for i in range(PC):  # Parallelized over all particles
         ParticleMass = INF_MASS if (i == 0 or i == 6 or i == 14) else 1
         Particles[i] = Particle( Pos=tm.vec2(  0.1 + i * 0.052 , 0.7   ), Vel=tm.vec2(0,0), Radius=ParticleRadius, Mass=ParticleMass)
@@ -95,7 +98,8 @@ def IntegrateForces(deltaTime : ti.f16, SelectedPointIdx : ti.i32):
 def SolveConstraints( deltaTimeSqr : ti.f16, SelectedPointIdx : ti.i32):
     ti.loop_config(serialize=True) # Serializes the next for loop
     for i in range(PC-1):
-        SolveLinearConstraint(Constraints[i].x, Constraints[i].y, deltaTimeSqr, SelectedPointIdx )
+        if Constraints[i].y != _INVALID_CONSTRAINT:
+            SolveLinearConstraint(Constraints[i].x, Constraints[i].y, deltaTimeSqr, SelectedPointIdx )
     
 @ti.kernel
 def SolveIntersections(deltaTime : ti.f16):
@@ -127,12 +131,41 @@ def UpdateVelocities(deltaTime : ti.f16):
     for i in range(PC): # Parallelized over all particles
         Particles[i].Vel = (Particles[i].Pos - Particles[i].PrevPos) / deltaTime
 
-LineIndices = ti.field( dtype=ti.int32, shape=(ConstraintCount*2))
+#LineIndices = ti.field( dtype=ti.int32, shape=(1,ConstraintCount*2))
+def GetRopePositionsAndIndices(ropeFirstNodeIdx):
+    positions = ti.field( dtype=tm.vec2, shape=(PC))
+    lineIndices = ti.field( dtype=ti.int32, shape=(ConstraintCount*2))
+
+    currentConstraintIdx = ropeFirstNodeIdx
+    idx = 0
+    # Every rope needs at least two nodes. we add the first node here...
+    positions[idx] = Particles[Constraints[currentConstraintIdx].x].Pos
+    lineIndices[idx] = idx
+    lineIndices[(idx*2)+1] = idx+1
+    
+    # the every subsequent node until we reach an invalid constraint idx and stop
+    while Constraints[currentConstraintIdx].y != _INVALID_CONSTRAINT and currentConstraintIdx < ConstraintCount:
+        idx+=1
+        positions[idx] = Particles[Constraints[currentConstraintIdx].y].Pos
+        currentConstraintIdx+=1
+        if Constraints[currentConstraintIdx].y != _INVALID_CONSTRAINT:
+            lineIndices[(idx*2)] = Constraints[currentConstraintIdx].x
+            lineIndices[(idx*2)+1] = Constraints[currentConstraintIdx].y
+
+    ropeLastNodeIdx = currentConstraintIdx
+    return positions, lineIndices, ropeLastNodeIdx
+
 def GenerateLineIndices():
+    LineIndices = ti.field( dtype=ti.int32, shape=(RopeCount, ConstraintCount*2)) #TODO: this y dimension is now too large; worth trimming? 
+    ropeIdx = 0
+    currentRopeConstraintIdx = 0
     for i in range(ConstraintCount):
-        LineIndices[i*2] = i
-        LineIndices[(i*2)+1] = i+1
-        
+        if Constraints[i].x == _INVALID_CONSTRAINT:
+            ropeIdx+=1
+            currentRopeConstraintIdx = 0
+        LineIndices[ropeIdx, currentRopeConstraintIdx*2] = currentRopeConstraintIdx
+        LineIndices[ropeIdx, (currentRopeConstraintIdx*2)+1] = currentRopeConstraintIdx+1
+        currentRopeConstraintIdx+=1
 
 Positions = ti.field(dtype=tm.vec2, shape=(PC))
 @ti.kernel
@@ -161,6 +194,12 @@ def MoveSelectedPoint(cursorPos):
     Particles[SelectedPointIdx].Pos = cursorPos
     Particles[SelectedPointIdx].PrevPos = cursorPos
 
+def BreakConstraint(ConstraintIdx, RopeCount):
+    if Constraints[ConstraintIdx].y != _INVALID_CONSTRAINT:
+        RopeCount+=1
+        Constraints[ConstraintIdx].y = _INVALID_CONSTRAINT
+    return RopeCount
+
 window = ti.ui.Window(name='Position Based Dynamic - Chain', res = WindowRes, fps_limit=30, pos = (1050, 350))
 canvas = window.get_canvas()
 
@@ -172,7 +211,6 @@ class SelectionMode(Enum):
 CurrentSelectionMode : SelectionMode = SelectionMode.Unselected
 
 Init()
-GenerateLineIndices()
 
 while window.running:
     if window.get_event( ti.ui.RELEASE):
@@ -184,6 +222,9 @@ while window.running:
         if window.event.key == ti.ui.LMB:
             CurrentSelectionMode = SelectionMode.Unselected
             SelectedPointIdx = -1
+        if window.event.key == 'c':
+            SelectedPointIdx = FindNearbyPoint( ti.Vector(window.get_cursor_pos()))
+            RopeCount = BreakConstraint(SelectedPointIdx, RopeCount)
 
     if window.get_event( ti.ui.PRESS ):
         if window.event.key == ti.ui.LMB:
@@ -208,8 +249,10 @@ while window.running:
         UpdateVelocities(substepDT)
     #######
 
-    ExtractParticlePositions()
-
-    canvas.circles(Positions, ParticleRadius) #TODO: report to taichi, circles radius is not in pixels unit
-    canvas.lines(Positions, 0.01,LineIndices)
+    ropeFirstNodeIdx = 0
+    for i in range(RopeCount):
+        ropePositions, ropeIndices, lastRopeIdx = GetRopePositionsAndIndices(ropeFirstNodeIdx) -- This is too expensive to do every frame , only compute indices when a break happens. and still extract positions every frame
+        canvas.circles(ropePositions, ParticleRadius) #TODO: report to taichi, circles radius is not in pixels unit
+        canvas.lines(ropePositions, 0.01, ropeIndices)
+        ropeFirstNodeIdx = lastRopeIdx+1
     window.show()
